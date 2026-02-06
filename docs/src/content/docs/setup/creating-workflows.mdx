@@ -104,6 +104,69 @@ Create a workflow for GitHub Agentic Workflows using https://raw.githubuserconte
 Remix the issue-triage.md workflow from github/gh-aw to add automatic labeling based on issue content and priority.
 ```
 
+## Creating Agentic Workflows manually
+
+If you prefer to create workflows manually, you can
+
+1. Create the workflow file in `.github/<workflow-name>.md`
+2. Install the [GitHub CLI](https://cli.github.com/) and the GitHub Agentic Workflows extension:
+
+   ```bash wrap
+   gh extension install github/gh-aw
+   ```
+
+3. Compile the workflow markdown into a YAML workflow file using:
+
+   ```bash wrap
+   gh aw compile
+   ```
+
+   This will generate a workflow YAML lock file i`.github/workflows/<workflow-name>.lock.yml` based on the content of your markdown file.
+
+4. Commit and push the workflow file and its lock file to your repository.
+
+If you haven't done so already, [set up your repository secrets](/gh-aw/reference/engines/) for the coding agent your workflow will be using.
+
+You can now trigger runs of the workflow either from the Actions tab in GitHub.com or using the `gh aw run` command from your terminal.
+
+## Creating Agentic Workflows by adding an existing workflow
+
+You create agentic workflows by adding any existing workflow you have access to.
+
+1. Find the workflow you want to add on github.com. This could be in another repository.
+
+2. Install the [GitHub CLI](https://cli.github.com/) and the GitHub Agentic Workflows extension:
+
+   ```bash wrap
+   gh extension install github/gh-aw
+   ```
+
+3. Use the `gh aw add` command to add the workflow to your repository:
+
+   ```bash wrap
+   gh aw add <workflow-url>
+   ```
+
+   For example, to add the daily-repo-status workflow from the top-level `workflows` directory of the `github/agentics` repository, you would run:
+
+   ```bash wrap
+   gh aw add https://github.com/githubnext/agentics/blob/main/workflows/daily-repo-status.md
+   ```
+
+   This will work for any URL to a workflow markdown file on GitHub. You should check carefully the workflow comes from a trusted source.
+   
+   If the workflow is in the top-level `workflows` directory, you can use a shorter form:
+
+   ```bash wrap
+   gh aw add githubnext/agentics/daily-repo-status
+   ```
+
+   Either way this will check various requirements and add the workflow markdown file to your repository and generate the corresponding YAML workflow.
+
+4. Commit and push the changes to your repository.
+
+You can now trigger runs of the workflow either from the Actions tab in GitHub.com or using the `gh aw run` command from your terminal.
+
 ## Adding Further Supporting Files for Agentic Workflows
 
 Optionally, you can also add additional developer support for agentic workflows:
