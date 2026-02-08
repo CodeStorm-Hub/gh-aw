@@ -41,9 +41,9 @@ Test single plugin installation
 			expectedTokenString: "secrets.GH_AW_PLUGINS_TOKEN || secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN",
 		},
 		{
-			name: "Multiple plugins with Claude",
+			name: "Multiple plugins with Copilot",
 			workflow: `---
-engine: claude
+engine: copilot
 on: workflow_dispatch
 permissions:
   issues: read
@@ -57,16 +57,16 @@ plugins:
 Test multiple plugins
 `,
 			expectedPlugins: []string{
-				"claude plugin install github/plugin1",
-				"claude plugin install acme/plugin2",
-				"claude plugin install org/plugin3",
+				"copilot plugin install github/plugin1",
+				"copilot plugin install acme/plugin2",
+				"copilot plugin install org/plugin3",
 			},
 			expectedTokenString: "secrets.GH_AW_PLUGINS_TOKEN || secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN",
 		},
 		{
-			name: "Plugins with Codex",
+			name: "Plugins with Copilot org namespace",
 			workflow: `---
-engine: codex
+engine: copilot
 on: workflow_dispatch
 permissions:
   issues: read
@@ -75,9 +75,9 @@ plugins:
   - openai/codex-plugin
 ---
 
-Test Codex plugin
+Test plugin with org namespace
 `,
-			expectedPlugins:     []string{"codex plugin install openai/codex-plugin"},
+			expectedPlugins:     []string{"copilot plugin install openai/codex-plugin"},
 			expectedTokenString: "secrets.GH_AW_PLUGINS_TOKEN || secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN",
 		},
 	}
