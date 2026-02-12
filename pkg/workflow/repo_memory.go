@@ -18,10 +18,12 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/github/gh-aw/pkg/constants"
 	"github.com/github/gh-aw/pkg/logger"
 )
 
@@ -41,14 +43,15 @@ type RepoMemoryConfig struct {
 
 // RepoMemoryEntry represents a single repo-memory configuration
 type RepoMemoryEntry struct {
-	ID           string   `yaml:"id"`                       // memory identifier (required for array notation)
-	TargetRepo   string   `yaml:"target-repo,omitempty"`    // target repository (default: current repo)
-	BranchName   string   `yaml:"branch-name,omitempty"`    // branch name (default: memory/{memory-id})
-	FileGlob     []string `yaml:"file-glob,omitempty"`      // file glob patterns for allowed files
-	MaxFileSize  int      `yaml:"max-file-size,omitempty"`  // maximum size per file in bytes (default: 10KB)
-	MaxFileCount int      `yaml:"max-file-count,omitempty"` // maximum file count per commit (default: 100)
-	Description  string   `yaml:"description,omitempty"`    // optional description for this memory
-	CreateOrphan bool     `yaml:"create-orphan,omitempty"`  // create orphaned branch if missing (default: true)
+	ID                string   `yaml:"id"`                           // memory identifier (required for array notation)
+	TargetRepo        string   `yaml:"target-repo,omitempty"`        // target repository (default: current repo)
+	BranchName        string   `yaml:"branch-name,omitempty"`        // branch name (default: memory/{memory-id})
+	FileGlob          []string `yaml:"file-glob,omitempty"`          // file glob patterns for allowed files
+	MaxFileSize       int      `yaml:"max-file-size,omitempty"`      // maximum size per file in bytes (default: 10KB)
+	MaxFileCount      int      `yaml:"max-file-count,omitempty"`     // maximum file count per commit (default: 100)
+	Description       string   `yaml:"description,omitempty"`        // optional description for this memory
+	CreateOrphan      bool     `yaml:"create-orphan,omitempty"`      // create orphaned branch if missing (default: true)
+	AllowedExtensions []string `yaml:"allowed-extensions,omitempty"` // allowed file extensions (default: [".json", ".jsonl", ".txt", ".md", ".csv"])
 }
 
 // RepoMemoryToolConfig represents the configuration for repo-memory in tools
@@ -112,11 +115,12 @@ func (c *Compiler) extractRepoMemoryConfig(toolsConfig *ToolsConfig) (*RepoMemor
 		repoMemoryLog.Print("Using default repo-memory configuration (nil value)")
 		config.Memories = []RepoMemoryEntry{
 			{
-				ID:           "default",
-				BranchName:   generateDefaultBranchName("default", config.BranchPrefix),
-				MaxFileSize:  10240, // 10KB
-				MaxFileCount: 100,
-				CreateOrphan: true,
+				ID:                "default",
+				BranchName:        generateDefaultBranchName("default", config.BranchPrefix),
+				MaxFileSize:       10240, // 10KB
+				MaxFileCount:      100,
+				CreateOrphan:      true,
+				AllowedExtensions: constants.DefaultAllowedMemoryExtensions,
 			},
 		}
 		return config, nil
@@ -129,11 +133,12 @@ func (c *Compiler) extractRepoMemoryConfig(toolsConfig *ToolsConfig) (*RepoMemor
 			// Create a single default memory entry
 			config.Memories = []RepoMemoryEntry{
 				{
-					ID:           "default",
-					BranchName:   generateDefaultBranchName("default", config.BranchPrefix),
-					MaxFileSize:  10240, // 10KB
-					MaxFileCount: 100,
-					CreateOrphan: true,
+					ID:                "default",
+					BranchName:        generateDefaultBranchName("default", config.BranchPrefix),
+					MaxFileSize:       10240, // 10KB
+					MaxFileCount:      100,
+					CreateOrphan:      true,
+					AllowedExtensions: constants.DefaultAllowedMemoryExtensions,
 				},
 			}
 		} else {
@@ -260,6 +265,22 @@ func (c *Compiler) extractRepoMemoryConfig(toolsConfig *ToolsConfig) (*RepoMemor
 					}
 				}
 
+				// Parse allowed-extensions field
+				if allowedExts, exists := memoryMap["allowed-extensions"]; exists {
+					if extArray, ok := allowedExts.([]any); ok {
+						entry.AllowedExtensions = make([]string, 0, len(extArray))
+						for _, ext := range extArray {
+							if extStr, ok := ext.(string); ok {
+								entry.AllowedExtensions = append(entry.AllowedExtensions, extStr)
+							}
+						}
+					}
+				}
+				// Default to standard allowed extensions if not specified
+				if len(entry.AllowedExtensions) == 0 {
+					entry.AllowedExtensions = constants.DefaultAllowedMemoryExtensions
+				}
+
 				config.Memories = append(config.Memories, entry)
 			}
 		}
@@ -367,6 +388,22 @@ func (c *Compiler) extractRepoMemoryConfig(toolsConfig *ToolsConfig) (*RepoMemor
 			if orphanBool, ok := createOrphan.(bool); ok {
 				entry.CreateOrphan = orphanBool
 			}
+		}
+
+		// Parse allowed-extensions field
+		if allowedExts, exists := configMap["allowed-extensions"]; exists {
+			if extArray, ok := allowedExts.([]any); ok {
+				entry.AllowedExtensions = make([]string, 0, len(extArray))
+				for _, ext := range extArray {
+					if extStr, ok := ext.(string); ok {
+						entry.AllowedExtensions = append(entry.AllowedExtensions, extStr)
+					}
+				}
+			}
+		}
+		// Default to standard allowed extensions if not specified
+		if len(entry.AllowedExtensions) == 0 {
+			entry.AllowedExtensions = constants.DefaultAllowedMemoryExtensions
 		}
 
 		config.Memories = []RepoMemoryEntry{entry}
@@ -601,6 +638,7 @@ func (c *Compiler) buildPushRepoMemoryJob(data *WorkflowData, threatDetectionEna
 		// Build step with github-script action
 		var step strings.Builder
 		fmt.Fprintf(&step, "      - name: Push repo-memory changes (%s)\n", memory.ID)
+		fmt.Fprintf(&step, "        id: push_repo_memory_%s\n", memory.ID)
 		step.WriteString("        if: always()\n")
 		fmt.Fprintf(&step, "        uses: %s\n", GetActionPin("actions/github-script"))
 		step.WriteString("        env:\n")
@@ -612,6 +650,9 @@ func (c *Compiler) buildPushRepoMemoryJob(data *WorkflowData, threatDetectionEna
 		fmt.Fprintf(&step, "          BRANCH_NAME: %s\n", memory.BranchName)
 		fmt.Fprintf(&step, "          MAX_FILE_SIZE: %d\n", memory.MaxFileSize)
 		fmt.Fprintf(&step, "          MAX_FILE_COUNT: %d\n", memory.MaxFileCount)
+		// Pass allowed extensions as JSON array
+		allowedExtsJSON, _ := json.Marshal(memory.AllowedExtensions)
+		fmt.Fprintf(&step, "          ALLOWED_EXTENSIONS: '%s'\n", allowedExtsJSON)
 		if fileGlobFilter != "" {
 			// Quote the value to prevent YAML alias interpretation of patterns like *.md
 			fmt.Fprintf(&step, "          FILE_GLOB_FILTER: \"%s\"\n", fileGlobFilter)
@@ -647,6 +688,15 @@ func (c *Compiler) buildPushRepoMemoryJob(data *WorkflowData, threatDetectionEna
 		jobCondition = "always() && needs.detection.outputs.success == 'true'"
 	}
 
+	// Build outputs map for validation failures from all memory steps
+	outputs := make(map[string]string)
+	for _, memory := range data.RepoMemoryConfig.Memories {
+		stepID := fmt.Sprintf("push_repo_memory_%s", memory.ID)
+		// Add outputs for each memory's validation status
+		outputs[fmt.Sprintf("validation_failed_%s", memory.ID)] = fmt.Sprintf("${{ steps.%s.outputs.validation_failed }}", stepID)
+		outputs[fmt.Sprintf("validation_error_%s", memory.ID)] = fmt.Sprintf("${{ steps.%s.outputs.validation_error }}", stepID)
+	}
+
 	job := &Job{
 		Name:        "push_repo_memory",
 		DisplayName: "", // No display name - job ID is sufficient
@@ -655,6 +705,7 @@ func (c *Compiler) buildPushRepoMemoryJob(data *WorkflowData, threatDetectionEna
 		Permissions: "permissions:\n      contents: write",
 		Needs:       []string{"agent"}, // Detection dependency added by caller if needed
 		Steps:       steps,
+		Outputs:     outputs,
 	}
 
 	return job, nil

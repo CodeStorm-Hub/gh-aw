@@ -1,10 +1,13 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
+	"github.com/github/gh-aw/pkg/constants"
 	"github.com/github/gh-aw/pkg/logger"
 	"github.com/goccy/go-yaml"
 )
@@ -18,12 +21,13 @@ type CacheMemoryConfig struct {
 
 // CacheMemoryEntry represents a single cache-memory configuration
 type CacheMemoryEntry struct {
-	ID            string `yaml:"id"`                       // cache identifier (required for array notation)
-	Key           string `yaml:"key,omitempty"`            // custom cache key
-	Description   string `yaml:"description,omitempty"`    // optional description for this cache
-	RetentionDays *int   `yaml:"retention-days,omitempty"` // retention days for upload-artifact action
-	RestoreOnly   bool   `yaml:"restore-only,omitempty"`   // if true, only restore cache without saving
-	Scope         string `yaml:"scope,omitempty"`          // scope for restore keys: "workflow" (default) or "repo"
+	ID                string   `yaml:"id"`                           // cache identifier (required for array notation)
+	Key               string   `yaml:"key,omitempty"`                // custom cache key
+	Description       string   `yaml:"description,omitempty"`        // optional description for this cache
+	RetentionDays     *int     `yaml:"retention-days,omitempty"`     // retention days for upload-artifact action
+	RestoreOnly       bool     `yaml:"restore-only,omitempty"`       // if true, only restore cache without saving
+	Scope             string   `yaml:"scope,omitempty"`              // scope for restore keys: "workflow" (default) or "repo"
+	AllowedExtensions []string `yaml:"allowed-extensions,omitempty"` // allowed file extensions (default: [".json", ".jsonl", ".txt", ".md", ".csv"])
 }
 
 // generateDefaultCacheKey generates a default cache key for a given cache ID
@@ -32,6 +36,99 @@ func generateDefaultCacheKey(cacheID string) string {
 		return "memory-${{ github.workflow }}-${{ github.run_id }}"
 	}
 	return fmt.Sprintf("memory-%s-${{ github.workflow }}-${{ github.run_id }}", cacheID)
+}
+
+// parseCacheMemoryEntry parses a single cache-memory entry from a map
+func parseCacheMemoryEntry(cacheMap map[string]any, defaultID string) (CacheMemoryEntry, error) {
+	entry := CacheMemoryEntry{
+		ID:  defaultID,
+		Key: generateDefaultCacheKey(defaultID),
+	}
+
+	// Parse ID (for array notation)
+	if id, exists := cacheMap["id"]; exists {
+		if idStr, ok := id.(string); ok {
+			entry.ID = idStr
+		}
+	}
+	// Update key if ID changed
+	if entry.ID != defaultID {
+		entry.Key = generateDefaultCacheKey(entry.ID)
+	}
+
+	// Parse custom key
+	if key, exists := cacheMap["key"]; exists {
+		if keyStr, ok := key.(string); ok {
+			entry.Key = keyStr
+			// Automatically append -${{ github.run_id }} if the key doesn't already end with it
+			runIdSuffix := "-${{ github.run_id }}"
+			if !strings.HasSuffix(entry.Key, runIdSuffix) {
+				entry.Key = entry.Key + runIdSuffix
+			}
+		}
+	}
+
+	// Parse description
+	if description, exists := cacheMap["description"]; exists {
+		if descStr, ok := description.(string); ok {
+			entry.Description = descStr
+		}
+	}
+
+	// Parse retention days
+	if retentionDays, exists := cacheMap["retention-days"]; exists {
+		if retentionDaysInt, ok := retentionDays.(int); ok {
+			entry.RetentionDays = &retentionDaysInt
+		} else if retentionDaysFloat, ok := retentionDays.(float64); ok {
+			retentionDaysIntValue := int(retentionDaysFloat)
+			entry.RetentionDays = &retentionDaysIntValue
+		} else if retentionDaysUint64, ok := retentionDays.(uint64); ok {
+			retentionDaysIntValue := int(retentionDaysUint64)
+			entry.RetentionDays = &retentionDaysIntValue
+		}
+		// Validate retention-days bounds
+		if entry.RetentionDays != nil {
+			if err := validateIntRange(*entry.RetentionDays, 1, 90, "retention-days"); err != nil {
+				return entry, err
+			}
+		}
+	}
+
+	// Parse restore-only flag
+	if restoreOnly, exists := cacheMap["restore-only"]; exists {
+		if restoreOnlyBool, ok := restoreOnly.(bool); ok {
+			entry.RestoreOnly = restoreOnlyBool
+		}
+	}
+
+	// Parse scope field
+	if scope, exists := cacheMap["scope"]; exists {
+		if scopeStr, ok := scope.(string); ok {
+			entry.Scope = scopeStr
+		}
+	}
+	// Default to "workflow" scope if not specified
+	if entry.Scope == "" {
+		entry.Scope = "workflow"
+	}
+
+	// Parse allowed-extensions field
+	if allowedExts, exists := cacheMap["allowed-extensions"]; exists {
+		if extArray, ok := allowedExts.([]any); ok {
+			entry.AllowedExtensions = make([]string, 0, len(extArray))
+			for _, ext := range extArray {
+				if extStr, ok := ext.(string); ok {
+					entry.AllowedExtensions = append(entry.AllowedExtensions, extStr)
+				}
+			}
+		}
+	}
+	// Default to standard allowed extensions if not specified
+	if len(entry.AllowedExtensions) == 0 {
+		entry.AllowedExtensions = constants.DefaultAllowedMemoryExtensions
+	}
+
+	return entry, nil
 }
 
 // extractCacheMemoryConfig extracts cache-memory configuration from tools section
@@ -52,8 +149,9 @@ func (c *Compiler) extractCacheMemoryConfig(toolsConfig *ToolsConfig) (*CacheMem
 	if cacheMemoryValue == nil {
 		config.Caches = []CacheMemoryEntry{
 			{
-				ID:  "default",
-				Key: generateDefaultCacheKey("default"),
+				ID:                "default",
+				Key:               generateDefaultCacheKey("default"),
+				AllowedExtensions: constants.DefaultAllowedMemoryExtensions,
 			},
 		}
 		return config, nil
@@ -65,8 +163,9 @@ func (c *Compiler) extractCacheMemoryConfig(toolsConfig *ToolsConfig) (*CacheMem
 			// Create a single default cache entry
 			config.Caches = []CacheMemoryEntry{
 				{
-					ID:  "default",
-					Key: generateDefaultCacheKey("default"),
+					ID:                "default",
+					Key:               generateDefaultCacheKey("default"),
+					AllowedExtensions: constants.DefaultAllowedMemoryExtensions,
 				},
 			}
 		}
@@ -80,79 +179,10 @@ func (c *Compiler) extractCacheMemoryConfig(toolsConfig *ToolsConfig) (*CacheMem
 		config.Caches = make([]CacheMemoryEntry, 0, len(cacheArray))
 		for _, item := range cacheArray {
 			if cacheMap, ok := item.(map[string]any); ok {
-				entry := CacheMemoryEntry{}
-
-				// ID is required for array notation
-				if id, exists := cacheMap["id"]; exists {
-					if idStr, ok := id.(string); ok {
-						entry.ID = idStr
-					}
+				entry, err := parseCacheMemoryEntry(cacheMap, "default")
+				if err != nil {
+					return nil, err
 				}
-				// Use "default" if no ID specified
-				if entry.ID == "" {
-					entry.ID = "default"
-				}
-
-				// Parse custom key
-				if key, exists := cacheMap["key"]; exists {
-					if keyStr, ok := key.(string); ok {
-						entry.Key = keyStr
-						// Automatically append -${{ github.run_id }} if the key doesn't already end with it
-						runIdSuffix := "-${{ github.run_id }}"
-						if !strings.HasSuffix(entry.Key, runIdSuffix) {
-							entry.Key = entry.Key + runIdSuffix
-						}
-					}
-				}
-				// Set default key if not specified
-				if entry.Key == "" {
-					entry.Key = generateDefaultCacheKey(entry.ID)
-				}
-
-				// Parse description
-				if description, exists := cacheMap["description"]; exists {
-					if descStr, ok := description.(string); ok {
-						entry.Description = descStr
-					}
-				}
-
-				// Parse retention days
-				if retentionDays, exists := cacheMap["retention-days"]; exists {
-					if retentionDaysInt, ok := retentionDays.(int); ok {
-						entry.RetentionDays = &retentionDaysInt
-					} else if retentionDaysFloat, ok := retentionDays.(float64); ok {
-						retentionDaysIntValue := int(retentionDaysFloat)
-						entry.RetentionDays = &retentionDaysIntValue
-					} else if retentionDaysUint64, ok := retentionDays.(uint64); ok {
-						retentionDaysIntValue := int(retentionDaysUint64)
-						entry.RetentionDays = &retentionDaysIntValue
-					}
-					// Validate retention-days bounds
-					if entry.RetentionDays != nil {
-						if err := validateIntRange(*entry.RetentionDays, 1, 90, "retention-days"); err != nil {
-							return nil, err
-						}
-					}
-				}
-
-				// Parse restore-only flag
-				if restoreOnly, exists := cacheMap["restore-only"]; exists {
-					if restoreOnlyBool, ok := restoreOnly.(bool); ok {
-						entry.RestoreOnly = restoreOnlyBool
-					}
-				}
-
-				// Parse scope field
-				if scope, exists := cacheMap["scope"]; exists {
-					if scopeStr, ok := scope.(string); ok {
-						entry.Scope = scopeStr
-					}
-				}
-				// Default to "workflow" scope if not specified
-				if entry.Scope == "" {
-					entry.Scope = "workflow"
-				}
-
 				config.Caches = append(config.Caches, entry)
 			}
 		}
@@ -168,67 +198,10 @@ func (c *Compiler) extractCacheMemoryConfig(toolsConfig *ToolsConfig) (*CacheMem
 	// Handle object configuration (single cache, backward compatible)
 	// Convert to array with single entry
 	if configMap, ok := cacheMemoryValue.(map[string]any); ok {
-		entry := CacheMemoryEntry{
-			ID:  "default",
-			Key: generateDefaultCacheKey("default"),
+		entry, err := parseCacheMemoryEntry(configMap, "default")
+		if err != nil {
+			return nil, err
 		}
-
-		// Parse custom key
-		if key, exists := configMap["key"]; exists {
-			if keyStr, ok := key.(string); ok {
-				entry.Key = keyStr
-				// Automatically append -${{ github.run_id }} if the key doesn't already end with it
-				runIdSuffix := "-${{ github.run_id }}"
-				if !strings.HasSuffix(entry.Key, runIdSuffix) {
-					entry.Key = entry.Key + runIdSuffix
-				}
-			}
-		}
-
-		// Parse description
-		if description, exists := configMap["description"]; exists {
-			if descStr, ok := description.(string); ok {
-				entry.Description = descStr
-			}
-		}
-
-		// Parse retention days
-		if retentionDays, exists := configMap["retention-days"]; exists {
-			if retentionDaysInt, ok := retentionDays.(int); ok {
-				entry.RetentionDays = &retentionDaysInt
-			} else if retentionDaysFloat, ok := retentionDays.(float64); ok {
-				retentionDaysIntValue := int(retentionDaysFloat)
-				entry.RetentionDays = &retentionDaysIntValue
-			} else if retentionDaysUint64, ok := retentionDays.(uint64); ok {
-				retentionDaysIntValue := int(retentionDaysUint64)
-				entry.RetentionDays = &retentionDaysIntValue
-			}
-			// Validate retention-days bounds
-			if entry.RetentionDays != nil {
-				if err := validateIntRange(*entry.RetentionDays, 1, 90, "retention-days"); err != nil {
-					return nil, err
-				}
-			}
-		}
-
-		// Parse restore-only flag
-		if restoreOnly, exists := configMap["restore-only"]; exists {
-			if restoreOnlyBool, ok := restoreOnly.(bool); ok {
-				entry.RestoreOnly = restoreOnlyBool
-			}
-		}
-
-		// Parse scope field
-		if scope, exists := configMap["scope"]; exists {
-			if scopeStr, ok := scope.(string); ok {
-				entry.Scope = scopeStr
-			}
-		}
-		// Default to "workflow" scope if not specified
-		if entry.Scope == "" {
-			entry.Scope = "workflow"
-		}
-
 		config.Caches = []CacheMemoryEntry{entry}
 		return config, nil
 	}
@@ -236,6 +209,7 @@ func (c *Compiler) extractCacheMemoryConfig(toolsConfig *ToolsConfig) (*CacheMem
 	return nil, nil
 }
 
+// extractCacheMemoryConfigFromMap is a backward compatibility wrapper for extractCacheMemoryConfig
 // extractCacheMemoryConfigFromMap is a backward compatibility wrapper for extractCacheMemoryConfig
 // that accepts map[string]any instead of *ToolsConfig. This allows gradual migration of calling code.
 func (c *Compiler) extractCacheMemoryConfigFromMap(tools map[string]any) (*CacheMemoryConfig, error) {
@@ -473,6 +447,56 @@ func generateCacheMemorySteps(builder *strings.Builder, data *WorkflowData) {
 	}
 }
 
+// generateCacheMemoryValidation generates validation steps for cache-memory file types
+// This should be called after agent execution to validate files before upload/save
+func generateCacheMemoryValidation(builder *strings.Builder, data *WorkflowData) {
+	if data.CacheMemoryConfig == nil || len(data.CacheMemoryConfig.Caches) == 0 {
+		return
+	}
+
+	cacheLog.Printf("Generating cache-memory validation steps for %d caches", len(data.CacheMemoryConfig.Caches))
+
+	// Use backward-compatible paths only when there's a single cache with ID "default"
+	useBackwardCompatiblePaths := len(data.CacheMemoryConfig.Caches) == 1 && data.CacheMemoryConfig.Caches[0].ID == "default"
+
+	for _, cache := range data.CacheMemoryConfig.Caches {
+		// Skip restore-only caches
+		if cache.RestoreOnly {
+			continue
+		}
+
+		// Default cache uses /tmp/gh-aw/cache-memory/ for backward compatibility
+		// Other caches use /tmp/gh-aw/cache-memory-{id}/ to prevent overlaps
+		var cacheDir string
+		if cache.ID == "default" {
+			cacheDir = "/tmp/gh-aw/cache-memory"
+		} else {
+			cacheDir = fmt.Sprintf("/tmp/gh-aw/cache-memory-%s", cache.ID)
+		}
+
+		// Prepare allowed extensions array for JavaScript
+		allowedExtsJSON, _ := json.Marshal(cache.AllowedExtensions)
+
+		// Build validation script
+		var validationScript strings.Builder
+		validationScript.WriteString("            const { setupGlobals } = require('/opt/gh-aw/actions/setup_globals.cjs');\n")
+		validationScript.WriteString("            setupGlobals(core, github, context, exec, io);\n")
+		validationScript.WriteString("            const { validateMemoryFiles } = require('/opt/gh-aw/actions/validate_memory_files.cjs');\n")
+		fmt.Fprintf(&validationScript, "            const allowedExtensions = %s;\n", allowedExtsJSON)
+		fmt.Fprintf(&validationScript, "            const result = validateMemoryFiles('%s', 'cache', allowedExtensions);\n", cacheDir)
+		validationScript.WriteString("            if (!result.valid) {\n")
+		fmt.Fprintf(&validationScript, "              core.setFailed(`File type validation failed: Found $${result.invalidFiles.length} file(s) with invalid extensions. Only %s are allowed.`);\n", strings.Join(cache.AllowedExtensions, ", "))
+		validationScript.WriteString("            }\n")
+
+		// Generate validation step using helper
+		stepName := "Validate cache-memory file types"
+		if !useBackwardCompatiblePaths {
+			stepName = fmt.Sprintf("Validate cache-memory file types (%s)", cache.ID)
+		}
+		builder.WriteString(generateInlineGitHubScriptStep(stepName, validationScript.String(), "always()"))
+	}
+}
+
 // generateCacheMemoryArtifactUpload generates artifact upload steps for cache-memory
 // This should be called after agent execution steps to ensure cache is uploaded after the agent has finished
 func generateCacheMemoryArtifactUpload(builder *strings.Builder, data *WorkflowData) {
@@ -549,30 +573,28 @@ func buildCacheMemoryPromptSection(config *CacheMemoryConfig) *PromptSection {
 			descriptionText = " " + cache.Description
 		}
 
-		cacheLog.Printf("Building cache memory prompt section with env vars: cache_dir=%s, description=%s", cacheDir, descriptionText)
+		// Build allowed extensions text
+		allowedExtsText := strings.Join(cache.AllowedExtensions, ", ")
+
+		cacheLog.Printf("Building cache memory prompt section with env vars: cache_dir=%s, description=%s, allowed_extensions=%v", cacheDir, descriptionText, cache.AllowedExtensions)
 
 		// Return prompt section with template file and environment variables for substitution
 		return &PromptSection{
 			Content: cacheMemoryPromptFile,
 			IsFile:  true,
 			EnvVars: map[string]string{
-				"GH_AW_CACHE_DIR":         cacheDir,
-				"GH_AW_CACHE_DESCRIPTION": descriptionText,
+				"GH_AW_CACHE_DIR":          cacheDir,
+				"GH_AW_CACHE_DESCRIPTION":  descriptionText,
+				"GH_AW_ALLOWED_EXTENSIONS": allowedExtsText,
 			},
 		}
 	}
 
-	// Multiple caches or non-default single cache - generate content inline
-	var content strings.Builder
-	content.WriteString("\n")
-	content.WriteString("---\n")
-	content.WriteString("\n")
-	content.WriteString("## Cache Folders Available\n")
-	content.WriteString("\n")
-	content.WriteString("You have access to persistent cache folders where you can read and write files to create memories and store information:\n")
-	content.WriteString("\n")
+	// Multiple caches or non-default single cache - use template file with substitutions
+	cacheLog.Print("Building cache memory prompt section for multiple caches using template")
 
-	// List all caches
+	// Build cache list
+	var cacheList strings.Builder
 	for _, cache := range config.Caches {
 		var cacheDir string
 		if cache.ID == "default" {
@@ -581,21 +603,51 @@ func buildCacheMemoryPromptSection(config *CacheMemoryConfig) *PromptSection {
 			cacheDir = fmt.Sprintf("/tmp/gh-aw/cache-memory-%s/", cache.ID)
 		}
 		if cache.Description != "" {
-			fmt.Fprintf(&content, "- **%s**: `%s` - %s\n", cache.ID, cacheDir, cache.Description)
+			fmt.Fprintf(&cacheList, "- **%s**: `%s` - %s\n", cache.ID, cacheDir, cache.Description)
 		} else {
-			fmt.Fprintf(&content, "- **%s**: `%s`\n", cache.ID, cacheDir)
+			fmt.Fprintf(&cacheList, "- **%s**: `%s`\n", cache.ID, cacheDir)
 		}
 	}
 
-	content.WriteString("\n")
-	content.WriteString("- **Read/Write Access**: You can freely read from and write to any files in these folders\n")
-	content.WriteString("- **Persistence**: Files in these folders persist across workflow runs via GitHub Actions cache\n")
-	content.WriteString("- **Last Write Wins**: If multiple processes write to the same file, the last write will be preserved\n")
-	content.WriteString("- **File Share**: Use these as simple file shares - organize files as you see fit\n")
-	content.WriteString("\n")
-	content.WriteString("Examples of what you can store:\n")
+	// Build allowed extensions text
+	// Check if all caches have the same allowed extensions
+	allowedExtsText := strings.Join(config.Caches[0].AllowedExtensions, ", ")
+	allSame := true
+	for i := 1; i < len(config.Caches); i++ {
+		if len(config.Caches[i].AllowedExtensions) != len(config.Caches[0].AllowedExtensions) {
+			allSame = false
+			break
+		}
+		for j, ext := range config.Caches[i].AllowedExtensions {
+			if ext != config.Caches[0].AllowedExtensions[j] {
+				allSame = false
+				break
+			}
+		}
+		if !allSame {
+			break
+		}
+	}
 
-	// Add examples for each cache
+	// If not all the same, build a union of all extensions
+	if !allSame {
+		extensionSet := make(map[string]bool)
+		for _, cache := range config.Caches {
+			for _, ext := range cache.AllowedExtensions {
+				extensionSet[ext] = true
+			}
+		}
+		// Convert set to sorted slice for consistent output
+		var allExtensions []string
+		for ext := range extensionSet {
+			allExtensions = append(allExtensions, ext)
+		}
+		sort.Strings(allExtensions)
+		allowedExtsText = strings.Join(allExtensions, ", ")
+	}
+
+	// Build cache examples
+	var cacheExamples strings.Builder
 	for _, cache := range config.Caches {
 		var cacheDir string
 		if cache.ID == "default" {
@@ -603,17 +655,22 @@ func buildCacheMemoryPromptSection(config *CacheMemoryConfig) *PromptSection {
 		} else {
 			cacheDir = fmt.Sprintf("/tmp/gh-aw/cache-memory-%s", cache.ID)
 		}
-		fmt.Fprintf(&content, "- `%s/notes.txt` - general notes and observations\n", cacheDir)
-		fmt.Fprintf(&content, "- `%s/preferences.json` - user preferences and settings\n", cacheDir)
-		fmt.Fprintf(&content, "- `%s/state/` - organized state files in subdirectories\n", cacheDir)
+		fmt.Fprintf(&cacheExamples, "- `%s/notes.txt` - general notes and observations\n", cacheDir)
+		fmt.Fprintf(&cacheExamples, "- `%s/notes.md` - markdown formatted notes\n", cacheDir)
+		fmt.Fprintf(&cacheExamples, "- `%s/preferences.json` - user preferences and settings\n", cacheDir)
+		fmt.Fprintf(&cacheExamples, "- `%s/history.jsonl` - activity history in JSON Lines format\n", cacheDir)
+		fmt.Fprintf(&cacheExamples, "- `%s/data.csv` - tabular data\n", cacheDir)
+		fmt.Fprintf(&cacheExamples, "- `%s/state/` - organized state files in subdirectories (with allowed file types)\n", cacheDir)
 	}
 
-	content.WriteString("\n")
-	content.WriteString("Feel free to create, read, update, and organize files in these folders as needed for your tasks.\n")
-
 	return &PromptSection{
-		Content: content.String(),
-		IsFile:  false,
+		Content: cacheMemoryPromptMultiFile,
+		IsFile:  true,
+		EnvVars: map[string]string{
+			"GH_AW_CACHE_LIST":         cacheList.String(),
+			"GH_AW_ALLOWED_EXTENSIONS": allowedExtsText,
+			"GH_AW_CACHE_EXAMPLES":     cacheExamples.String(),
+		},
 	}
 }
 
@@ -660,6 +717,24 @@ func (c *Compiler) buildUpdateCacheMemoryJob(data *WorkflowData, threatDetection
 		fmt.Fprintf(&downloadStep, "          name: %s\n", artifactName)
 		fmt.Fprintf(&downloadStep, "          path: %s\n", cacheDir)
 		steps = append(steps, downloadStep.String())
+
+		// Prepare allowed extensions array for JavaScript
+		allowedExtsJSON, _ := json.Marshal(cache.AllowedExtensions)
+
+		// Build validation script
+		var validationScript strings.Builder
+		validationScript.WriteString("            const { setupGlobals } = require('/opt/gh-aw/actions/setup_globals.cjs');\n")
+		validationScript.WriteString("            setupGlobals(core, github, context, exec, io);\n")
+		validationScript.WriteString("            const { validateMemoryFiles } = require('/opt/gh-aw/actions/validate_memory_files.cjs');\n")
+		fmt.Fprintf(&validationScript, "            const allowedExtensions = %s;\n", allowedExtsJSON)
+		fmt.Fprintf(&validationScript, "            const result = validateMemoryFiles('%s', 'cache', allowedExtensions);\n", cacheDir)
+		validationScript.WriteString("            if (!result.valid) {\n")
+		fmt.Fprintf(&validationScript, "              core.setFailed(`File type validation failed: Found ${result.invalidFiles.length} file(s) with invalid extensions. Only %s are allowed.`);\n", strings.Join(cache.AllowedExtensions, ", "))
+		validationScript.WriteString("            }\n")
+
+		// Generate validation step using helper
+		stepName := fmt.Sprintf("Validate cache-memory file types (%s)", cache.ID)
+		steps = append(steps, generateInlineGitHubScriptStep(stepName, validationScript.String(), ""))
 
 		// Generate cache key (same logic as in generateCacheMemorySteps)
 		cacheKey := cache.Key

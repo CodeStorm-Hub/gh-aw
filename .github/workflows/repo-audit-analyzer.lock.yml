@@ -507,28 +507,8 @@ jobs:
           GH_AW_PROMPT_EOF
           cat "/opt/gh-aw/prompts/temp_folder_prompt.md" >> "$GH_AW_PROMPT"
           cat "/opt/gh-aw/prompts/markdown.md" >> "$GH_AW_PROMPT"
+          cat "/opt/gh-aw/prompts/cache_memory_prompt_multi.md" >> "$GH_AW_PROMPT"
           cat << 'GH_AW_PROMPT_EOF' >> "$GH_AW_PROMPT"
-          
-          ---
-          
-          ## Cache Folders Available
-          
-          You have access to persistent cache folders where you can read and write files to create memories and store information:
-          
-          - **repo-audits**: `/tmp/gh-aw/cache-memory-repo-audits/`
-          
-          - **Read/Write Access**: You can freely read from and write to any files in these folders
-          - **Persistence**: Files in these folders persist across workflow runs via GitHub Actions cache
-          - **Last Write Wins**: If multiple processes write to the same file, the last write will be preserved
-          - **File Share**: Use these as simple file shares - organize files as you see fit
-          
-          Examples of what you can store:
-          - `/tmp/gh-aw/cache-memory-repo-audits/notes.txt` - general notes and observations
-          - `/tmp/gh-aw/cache-memory-repo-audits/preferences.json` - user preferences and settings
-          - `/tmp/gh-aw/cache-memory-repo-audits/state/` - organized state files in subdirectories
-          
-          Feel free to create, read, update, and organize files in these folders as needed for your tasks.
-          
           <safe-outputs>
           <description>GitHub API Access Instructions</description>
           <important>
@@ -589,6 +569,16 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           GH_AW_PROMPT: /tmp/gh-aw/aw-prompts/prompt.txt
+          GH_AW_ALLOWED_EXTENSIONS: '.json, .jsonl, .txt, .md, .csv'
+          GH_AW_CACHE_EXAMPLES: '- `/tmp/gh-aw/cache-memory-repo-audits/notes.txt` - general notes and observations
+- `/tmp/gh-aw/cache-memory-repo-audits/notes.md` - markdown formatted notes
+- `/tmp/gh-aw/cache-memory-repo-audits/preferences.json` - user preferences and settings
+- `/tmp/gh-aw/cache-memory-repo-audits/history.jsonl` - activity history in JSON Lines format
+- `/tmp/gh-aw/cache-memory-repo-audits/data.csv` - tabular data
+- `/tmp/gh-aw/cache-memory-repo-audits/state/` - organized state files in subdirectories (with allowed file types)
+'
+          GH_AW_CACHE_LIST: '- **repo-audits**: `/tmp/gh-aw/cache-memory-repo-audits/`
+'
           GH_AW_GITHUB_ACTOR: ${{ github.actor }}
           GH_AW_GITHUB_EVENT_COMMENT_ID: ${{ github.event.comment.id }}
           GH_AW_GITHUB_EVENT_DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
@@ -606,6 +596,9 @@ jobs:
             return await substitutePlaceholders({
               file: process.env.GH_AW_PROMPT,
               substitutions: {
+                GH_AW_ALLOWED_EXTENSIONS: process.env.GH_AW_ALLOWED_EXTENSIONS,
+                GH_AW_CACHE_EXAMPLES: process.env.GH_AW_CACHE_EXAMPLES,
+                GH_AW_CACHE_LIST: process.env.GH_AW_CACHE_LIST,
                 GH_AW_GITHUB_ACTOR: process.env.GH_AW_GITHUB_ACTOR,
                 GH_AW_GITHUB_EVENT_COMMENT_ID: process.env.GH_AW_GITHUB_EVENT_COMMENT_ID,
                 GH_AW_GITHUB_EVENT_DISCUSSION_NUMBER: process.env.GH_AW_GITHUB_EVENT_DISCUSSION_NUMBER,
@@ -777,6 +770,19 @@ jobs:
           # AWF runs with sudo, creating files owned by root
           sudo chmod -R a+r /tmp/gh-aw/sandbox/firewall/logs 2>/dev/null || true
           awf logs summary | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Validate cache-memory file types (repo-audits)
+        if: always()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { setupGlobals } = require('/opt/gh-aw/actions/setup_globals.cjs');
+            setupGlobals(core, github, context, exec, io);
+            const { validateMemoryFiles } = require('/opt/gh-aw/actions/validate_memory_files.cjs');
+            const allowedExtensions = [".json",".jsonl",".txt",".md",".csv"];
+            const result = validateMemoryFiles('/tmp/gh-aw/cache-memory-repo-audits', 'cache', allowedExtensions);
+            if (!result.valid) {
+              core.setFailed(`File type validation failed: Found $${result.invalidFiles.length} file(s) with invalid extensions. Only .json, .jsonl, .txt, .md, .csv are allowed.`);
+            }
       - name: Upload cache-memory data as artifact (repo-audits)
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -1113,6 +1119,18 @@ jobs:
         with:
           name: cache-memory-repo-audits
           path: /tmp/gh-aw/cache-memory-repo-audits
+      - name: Validate cache-memory file types (repo-audits)
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { setupGlobals } = require('/opt/gh-aw/actions/setup_globals.cjs');
+            setupGlobals(core, github, context, exec, io);
+            const { validateMemoryFiles } = require('/opt/gh-aw/actions/validate_memory_files.cjs');
+            const allowedExtensions = [".json",".jsonl",".txt",".md",".csv"];
+            const result = validateMemoryFiles('/tmp/gh-aw/cache-memory-repo-audits', 'cache', allowedExtensions);
+            if (!result.valid) {
+              core.setFailed(`File type validation failed: Found ${result.invalidFiles.length} file(s) with invalid extensions. Only .json, .jsonl, .txt, .md, .csv are allowed.`);
+            }
       - name: Save cache-memory to cache (repo-audits)
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

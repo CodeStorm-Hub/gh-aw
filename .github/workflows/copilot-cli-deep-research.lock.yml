@@ -515,6 +515,7 @@ jobs:
           - **Automatic Push**: Changes are automatically committed and pushed after the workflow completes
           - **Merge Strategy**: In case of conflicts, your changes (current version) win
           - **Persistence**: Files persist across workflow runs via git branch storage
+          - **Allowed File Types**: Only the following file extensions are allowed: `.json`, `.jsonl`, `.txt`, `.md`, `.csv`. Files with other extensions will be rejected during validation.
           
           **Constraints:**
           - **Allowed Files**: Only files matching patterns: memory/copilot-cli-research/*.json, memory/copilot-cli-research/*.md
@@ -523,10 +524,13 @@ jobs:
           
           Examples of what you can store:
           - `/tmp/gh-aw/repo-memory/default/notes.md` - general notes and observations
+          - `/tmp/gh-aw/repo-memory/default/notes.txt` - plain text notes
           - `/tmp/gh-aw/repo-memory/default/state.json` - structured state data
-          - `/tmp/gh-aw/repo-memory/default/history/` - organized history files in subdirectories
+          - `/tmp/gh-aw/repo-memory/default/history.jsonl` - activity history in JSON Lines format
+          - `/tmp/gh-aw/repo-memory/default/data.csv` - tabular data
+          - `/tmp/gh-aw/repo-memory/default/history/` - organized history files in subdirectories (with allowed file types)
           
-          Feel free to create, read, update, and organize files in this folder as needed for your tasks.
+          Feel free to create, read, update, and organize files in this folder as needed for your tasks, using only the allowed file types.
           
           <safe-outputs>
           <description>GitHub API Access Instructions</description>
@@ -902,6 +906,8 @@ jobs:
           GH_AW_CHECKOUT_PR_SUCCESS: ${{ needs.agent.outputs.checkout_pr_success }}
           GH_AW_CREATE_DISCUSSION_ERRORS: ${{ needs.safe_outputs.outputs.create_discussion_errors }}
           GH_AW_CREATE_DISCUSSION_ERROR_COUNT: ${{ needs.safe_outputs.outputs.create_discussion_error_count }}
+          GH_AW_REPO_MEMORY_VALIDATION_FAILED_default: ${{ needs.push_repo_memory.outputs.validation_failed_default }}
+          GH_AW_REPO_MEMORY_VALIDATION_ERROR_default: ${{ needs.push_repo_memory.outputs.validation_error_default }}
         with:
           github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
@@ -1061,6 +1067,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      validation_error_default: ${{ steps.push_repo_memory_default.outputs.validation_error }}
+      validation_failed_default: ${{ steps.push_repo_memory_default.outputs.validation_failed }}
     steps:
       - name: Checkout actions folder
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1095,6 +1104,7 @@ jobs:
           name: repo-memory-default
           path: /tmp/gh-aw/repo-memory/default
       - name: Push repo-memory changes (default)
+        id: push_repo_memory_default
         if: always()
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
@@ -1106,6 +1116,7 @@ jobs:
           BRANCH_NAME: memory/copilot-cli-research
           MAX_FILE_SIZE: 204800
           MAX_FILE_COUNT: 100
+          ALLOWED_EXTENSIONS: '[".json",".jsonl",".txt",".md",".csv"]'
           FILE_GLOB_FILTER: "memory/copilot-cli-research/*.json memory/copilot-cli-research/*.md"
         with:
           script: |
